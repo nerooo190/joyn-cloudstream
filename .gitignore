@@ -1,0 +1,10 @@
+.gradle/
+.idea/
+.kotlin/
+**/build/
+local.properties
+*.iml
+*.cs3
+*.zip
+__pycache__/
+.DS_Store
