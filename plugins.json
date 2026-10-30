@@ -1,0 +1,23 @@
+[
+  {
+    "iconUrl": "https://www.joyn.de/icons/apple-touch-icon-180x180.png",
+    "fileHash": "sha256-613bd39aca51e7e5d56559842555775dd08a60a8b642e1c1cd4f0aadb8939efd",
+    "apiVersion": 1,
+    "repositoryUrl": "https://github.com/nerooo190/joyn-cloudstream",
+    "fileSize": 43650,
+    "status": 3,
+    "language": "de",
+    "authors": [
+      "Joyn Cloudstream Contributors"
+    ],
+    "tvTypes": [
+      "TvSeries",
+      "Movie"
+    ],
+    "version": 1,
+    "internalName": "JoynProvider",
+    "description": "Joyn Mediathek: kostenlose Serien, Shows und Filme (DE). Experimentell.",
+    "url": "https://raw.githubusercontent.com/nerooo190/joyn-cloudstream/builds/JoynProvider.cs3",
+    "name": "JoynProvider"
+  }
+]
