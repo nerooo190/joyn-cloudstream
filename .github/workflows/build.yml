@@ -1,0 +1,84 @@
+name: Build and publish Cloudstream repository
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android build dependencies
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+      - name: Test and build plugin
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :JoynProvider:testDebugUnitTest make makePluginsJson
+      - name: Prepare installable repository
+        run: python3 tools/prepare_repository.py --repository "$GITHUB_REPOSITORY" --source-sha "$GITHUB_SHA"
+      - name: Upload plugin and repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: joyn-cloudstream-repository
+          path: build/repository/
+          if-no-files-found: error
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: JoynProvider/build/reports/tests/
+          if-no-files-found: ignore
+
+  publish:
+    needs: build
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: publication
+      - uses: actions/download-artifact@v4
+        with:
+          name: joyn-cloudstream-repository
+          path: repository-files
+      - name: Publish builds branch (also works on the first run)
+        working-directory: publication
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git show-ref --verify --quiet refs/remotes/origin/builds; then
+            git switch -C builds origin/builds
+          else
+            git switch --orphan builds
+          fi
+          git rm -rf --ignore-unmatch .
+          cp -R "$GITHUB_WORKSPACE/repository-files/." .
+          git add --all
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Build ${GITHUB_SHA}"
+          git push origin HEAD:builds
