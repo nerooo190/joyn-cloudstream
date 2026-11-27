@@ -1,10 +1,10 @@
 [
   {
     "iconUrl": "https://www.joyn.de/icons/apple-touch-icon-180x180.png",
-    "fileHash": "sha256-613bd39aca51e7e5d56559842555775dd08a60a8b642e1c1cd4f0aadb8939efd",
+    "fileHash": "sha256-6622eb1f2dc7792225734d8fffa9471e876fc11033058d173289a92083e0b526",
     "apiVersion": 1,
     "repositoryUrl": "https://github.com/nerooo190/joyn-cloudstream",
-    "fileSize": 43650,
+    "fileSize": 47578,
     "status": 3,
     "language": "de",
     "authors": [
@@ -14,9 +14,9 @@
       "TvSeries",
       "Movie"
     ],
-    "version": 1,
+    "version": 2,
     "internalName": "JoynProvider",
-    "description": "Joyn Mediathek: kostenlose Serien, Shows und Filme (DE). Experimentell.",
+    "description": "Joyn Mediathek: Serien, Shows, Filme und Dokumentationen (DE). Wiedergabe experimentell.",
     "url": "https://raw.githubusercontent.com/nerooo190/joyn-cloudstream/builds/JoynProvider.cs3",
     "name": "JoynProvider"
   }
