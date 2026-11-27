@@ -37,7 +37,7 @@ def prepare(repository: str, output: Path, source_sha: str = "local") -> None:
         )
     manifest = {
         "name": "Joyn Mediathek – experimentell",
-        "description": "Kostenlose Joyn-Inhalte (DE). Wiedergabe-Signierung noch offen.",
+        "description": "Serien, Shows, Filme und Dokumentationen von Joyn (DE). Wiedergabe experimentell.",
         "manifestVersion": 1,
         "pluginLists": [f"{prefix}/plugins.json"],
     }

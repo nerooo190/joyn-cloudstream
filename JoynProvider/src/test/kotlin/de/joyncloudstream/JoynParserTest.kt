@@ -39,13 +39,34 @@ class JoynParserTest {
         assertNull(result.license)
     }
 
-    @Test fun `filters paid and non video cards from homepage`() {
-        val block = joynJson.readTree("""{"headline":"Filme","assets":[
+    @Test fun `uses portrait artwork first and sizes alternate image types`() {
+        val node = joynJson.readTree("""{"title":"Film","path":"/filme/film","images":[
+            {"type":"IMAGE_HEADER_POSTER","url":"https://img.joyn.de/ingest/hero.jpg"},
+            {"type":"VOD_ART_PORTRAIT","url":"https://img.joyn.de/gn/cover.jpg"}
+        ]}""")
+        val item = JoynParser.item(node)!!
+        assertEquals("https://img.joyn.de/gn/cover.jpg/profile:original", item.poster)
+        assertEquals("https://img.joyn.de/ingest/hero.jpg/profile:nextgen-web-herolandscape-1920x", item.background)
+    }
+
+    @Test fun `uses episode thumbnails and retains encoded image paths`() {
+        val node = joynJson.readTree("""{"title":"Folge","path":"/serien/serie/folge",
+            "cardImage":{"url":"invalid","urlMobile":"https://img.joyn.de/path%2Btest.png/profile:original?x=2"},
+            "primaryImage":{"url":"https://img.joyn.de/backup.jpg"}}""")
+        assertEquals("https://img.joyn.de/path%2Btest.png/profile:nextgen-web-livestill-503x283?x=2",
+            JoynParser.item(node)?.poster)
+    }
+
+    @Test fun `catalogue metadata describes access while retaining protected titles`() {
+        val nodes = joynJson.readTree("""{"assets":[
             {"title":"Free","path":"/filme/free","licenseTypes":["AVOD"]},
             {"title":"Paid","path":"/filme/paid","licenseTypes":["SVOD"]},
             {"title":"Channel","path":"/mediatheken/sat1","licenseTypes":["AVOD"]},
-            {"title":"Plus","path":"/filme/plus","licenseTypes":["AVOD"],"markings":["PLUS_ONLY"]}
+            {"title":"Plus","path":"/filme/plus","licenseTypes":["AVOD"],"markings":["PLUS_ONLY"]},
+            {"title":"Login","path":"/filme/login","license":"RVOD"}
         ]}""")
-        assertEquals(listOf("Free"), JoynParser.lanes(listOf(block)).single().items.map { it.title })
+        val items = nodes.items("assets").mapNotNull { JoynParser.item(it) }
+        assertEquals(listOf("Free", "Paid", "Plus", "Login"), items.map { it.title })
+        assertEquals(listOf(null, "Joyn+", "Joyn+", "Joyn-Login"), items.map { it.accessHint })
     }
 }

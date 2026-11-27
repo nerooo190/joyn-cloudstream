@@ -3,6 +3,7 @@ package de.joyncloudstream
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
+import java.net.URLDecoder
 
 class JoynClientTest {
     private fun json(value: Any) = joynJson.writeValueAsString(value)
@@ -12,24 +13,38 @@ class JoynClientTest {
         "video" to mapOf("id" to "video-$index", "duration" to 1200),
     )
 
+    private fun catalogueHit(path: String, license: String = "AVOD") = mapOf(
+        "title" to path.substringAfterLast('/'), "path" to path, "license" to license,
+    )
+
+    private fun catalogueResponse(pages: Int, vararg hits: Map<String, String>) =
+        JoynHttpResponse(200, json(mapOf("results" to listOf(mapOf("nbPages" to pages, "hits" to hits)))))
+
+    private fun searchParams(body: String): Map<String, String> =
+        joynJson.readTree(body)["requests"][0]["params"].asText().split('&').associate { entry ->
+            entry.substringBefore('=') to URLDecoder.decode(entry.substringAfter('='), "UTF-8")
+        }
+
     @Test fun `loads all episode pages instead of trusting the preview or total`() = runBlocking {
         val offsets = mutableListOf<Int>()
         val client = JoynClient(JoynTransport { _, _, body ->
             val request = joynJson.readTree(body)
             val offset = request["variables"]["offset"].asInt()
+            assertEquals("ALL", request["variables"]["licenseFilter"].asText())
             offsets += offset
             val batch = if (offset == 0) (1..100).map { episode(it) }
                 else listOf(episode(101), episode(102, "SVOD"), episode(103))
             JoynHttpResponse(200, json(mapOf("data" to mapOf("season" to mapOf(
-                // Intentionally wrong: a catalogue total need not equal the free episode count.
+                // Intentionally wrong: the catalogue total need not equal the returned episode count.
                 "numberOfEpisodes" to 2000, "episodes" to batch,
             )))))
         })
         val result = client.seasonEpisodes("season-1", 1)
         assertEquals(listOf(0, 100), offsets)
-        assertEquals(102, result.size)
+        assertEquals(103, result.size)
         assertEquals(103, result.last().episode)
         assertTrue(result.all { it.season == 1 })
+        assertEquals("Joyn+", result[101].accessHint)
     }
 
     @Test fun `fails explicitly if server ignores pagination instead of returning partial series`() = runBlocking {
@@ -116,7 +131,7 @@ class JoynClientTest {
                 assertEquals("key-$keyCalls", headers["x-algolia-api-key"])
                 assertEquals("indexion_prod_vod", joynJson.readTree(body)["requests"][0]["indexName"].asText())
                 if (searchCalls == 1) JoynHttpResponse(403, "{}")
-                else JoynHttpResponse(200, """{"results":[{"hits":[
+                else JoynHttpResponse(200, """{"results":[{"nbPages":1,"hits":[
                     {"titles":{"DE":"K 11"},"routes":[{"deviceClass":"WEB","path":"/serien/k11"}],
                     "license":"AVOD","images":[{"type":"HERO_PORTRAIT","url":"https://img.joyn.de/poster.jpg"}]},
                     {"titles":{"DE":"Paid"},"routes":[{"deviceClass":"WEB","path":"/filme/paid"}],"license":"SVOD"}
@@ -125,8 +140,76 @@ class JoynClientTest {
         })
         val result = client.search("K11 & Co")
         assertEquals(2, keyCalls)
-        assertEquals(listOf("K 11"), result.map { it.title })
-        assertEquals("https://img.joyn.de/poster.jpg", result.single().poster)
+        assertEquals(listOf("K 11", "Paid"), result.map { it.title })
+        assertEquals("https://img.joyn.de/poster.jpg/profile:original", result.first().poster)
+        assertEquals("Joyn+", result.last().accessHint)
+    }
+
+    @Test fun `home rows keep a stable availability window and skip duplicate pages`() = runBlocking {
+        val requests = mutableListOf<Map<String, String>>()
+        var time = 1000L
+        val client = JoynClient(JoynTransport { url, _, body ->
+            if (url.contains("graphql")) {
+                JoynHttpResponse(200, """{"data":{"searchApiKey":"key"}}""")
+            } else {
+                val params = searchParams(body)
+                requests += params
+                if ("type:MOVIE" in params.getValue("filters")) catalogueResponse(1, catalogueHit("/filme/film"))
+                else when (params.getValue("page")) {
+                    "0", "1" -> catalogueResponse(3, catalogueHit("/serien/serie"))
+                    "2" -> catalogueResponse(3, catalogueHit("/serien/neue-serie", "RVOD"))
+                    else -> error("Unexpected page")
+                }
+            }
+        }, now = { time })
+        val first = client.home(JoynSection.SERIES, 1)
+        assertTrue(first.hasNext)
+        time += 1000
+        assertEquals("/filme/film", client.home(JoynSection.MOVIES, 1).items.single().path)
+        val second = client.home(JoynSection.SERIES, 2)
+        assertEquals("/serien/neue-serie", second.items.single().path)
+        assertFalse(second.hasNext)
+        assertEquals(second, client.home(JoynSection.SERIES, 2))
+        assertEquals(listOf("0", "0", "1", "2"), requests.map { it["page"] })
+        assertTrue(requests.all { it.getValue("filters").startsWith("distributionTenant:JOYN AND ") })
+        assertEquals(1, listOf(requests[0], requests[2], requests[3]).map { it["numericFilters"] }.distinct().size)
+        assertNotEquals(requests[0]["numericFilters"], requests[1]["numericFilters"])
+    }
+
+    @Test fun `search follows all pages across series and movies without showing duplicate urls`() = runBlocking {
+        val client = JoynClient(JoynTransport { url, _, body ->
+            if (url.contains("graphql")) {
+                JoynHttpResponse(200, """{"data":{"searchApiKey":"key"}}""")
+            } else {
+                val params = searchParams(body)
+                assertEquals("A & B", params["query"])
+                assertEquals("distributionTenant:JOYN AND (type:SERIES OR type:MOVIE)", params["filters"])
+                val series = catalogueHit("/serien/serie")
+                if (params["page"] == "0") catalogueResponse(2, series)
+                else catalogueResponse(2, series, catalogueHit("/filme/film"))
+            }
+        })
+        assertEquals(listOf("/serien/serie", "/filme/film"), client.search(" A & B ").map { it.path })
+    }
+
+    @Test fun `series details include all seasons and keep each season once`() = runBlocking {
+        val ids = mutableListOf<String>()
+        val client = JoynClient(JoynTransport { _, _, body ->
+            val request = joynJson.readTree(body)
+            if (request.string("operationName") == "SeriesDetailNewPageStatic") {
+                JoynHttpResponse(200, """{"data":{"page":{"series":{"path":"/serien/beispiel","title":"Beispiel",
+                    "allSeasons":[{"id":"season-free","number":1},{"id":"season-plus","number":2}],
+                    "freeSeasons":[{"id":"season-free","number":1}]}}}}""")
+            } else {
+                val id = request["variables"]["id"].asText()
+                ids += id
+                val ep = if (id == "season-free") episode(1) else episode(2, "SVOD")
+                JoynHttpResponse(200, json(mapOf("data" to mapOf("season" to mapOf("episodes" to listOf(ep))))))
+            }
+        })
+        val result = client.details("/serien/beispiel")
+        assertEquals(listOf("season-free", "season-plus"), ids)
+        assertEquals(listOf(1, 2), result.episodes.map { it.season })
     }
 
     @Test fun `graphql failure is not presented as an empty catalogue`() = runBlocking {
@@ -134,7 +217,7 @@ class JoynClientTest {
             JoynHttpResponse(200, """{"data":null,"errors":[{"message":"PersistedQueryNotFound"}]}""")
         })
         try {
-            client.home(1)
+            client.home(JoynSection.SERIES, 1)
             fail("Expected API error")
         } catch (e: JoynException) { assertTrue(e.message!!.contains("Katalogschnittstelle")) }
     }

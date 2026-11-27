@@ -12,6 +12,15 @@ internal fun interface JoynTransport {
     suspend fun post(url: String, headers: Map<String, String>, body: String): JoynHttpResponse
 }
 
+internal enum class JoynSection(val title: String, val filter: String) {
+    SERIES("Alle Serien und Shows", "type:SERIES"),
+    MOVIES("Alle Filme", "type:MOVIE"),
+    DOCUMENTARIES("Dokumentationen",
+        "(type:SERIES OR type:MOVIE) AND (genres.de:Dokumentation OR genres.de:Dokumentarfilm OR genres.de:Doku)"),
+    FAMILY("Kinder und Familie",
+        "(type:SERIES OR type:MOVIE) AND (genres.de:Kinder OR genres.de:Familie OR genres.de:Familienfilm)"),
+}
+
 /** Public catalogue and anonymous playback API. No user credentials are stored. */
 internal class JoynClient(
     private val http: JoynTransport,
@@ -28,11 +37,22 @@ internal class JoynClient(
     )
     private val authLock = Mutex()
     private val searchLock = Mutex()
-    private val homeLock = Mutex()
+    private val homeSections = JoynSection.entries.associateWith { HomeSection() }
     private val clientId = UUID.randomUUID().toString()
     private var anonymous: Pair<String, Long>? = null
     private var searchKey: Pair<String, Long>? = null
-    private var homeCache: Pair<JsonNode, Long>? = null
+
+    private class HomeSection {
+        val lock = Mutex()
+        var cursor: CatalogueCursor? = null
+    }
+
+    private class CatalogueCursor(val availableAt: Long) {
+        var sourcePage = 0
+        var hasNext = true
+        val seen = mutableSetOf<String>()
+        val pages = mutableListOf<JoynCataloguePage>()
+    }
 
     private suspend fun post(url: String, body: Any, extra: Map<String, String> = emptyMap()): Pair<Int, JsonNode> {
         val response = http.post(url, headers + extra, joynJson.writeValueAsString(body))
@@ -48,8 +68,7 @@ internal class JoynClient(
             "operationName" to operation,
             "variables" to variables,
             "extensions" to mapOf("persistedQuery" to mapOf("version" to 1, "sha256Hash" to hash)),
-        ), mapOf("x-api-key" to PUBLIC_WEB_API_KEY) +
-            if (operation == "Blocks") mapOf("Authorization" to "Bearer ${token()}") else emptyMap())
+        ), mapOf("x-api-key" to PUBLIC_WEB_API_KEY))
         if (status !in 200..299) throw JoynException("Joyn-Katalog nicht erreichbar (HTTP $status).")
         if (root.items("errors").isNotEmpty()) {
             val code = root.items("errors").firstOrNull()?.get("extensions")?.string("code")
@@ -60,21 +79,25 @@ internal class JoynClient(
             ?: throw JoynException("Joyn hat keine Katalogdaten geliefert.")
     }
 
-    suspend fun home(page: Int): JoynHome {
+    suspend fun home(section: JoynSection, page: Int): JoynCataloguePage {
         require(page >= 1)
-        val root = homeLock.withLock {
-            homeCache?.takeIf { it.second > now() }?.first ?: query(
-                "LandingPageClient", mapOf("path" to "/neu-beliebt"),
-            ).get("page")?.takeUnless { it.isNull }?.also { homeCache = it to now() + 300_000 }
-            ?: throw JoynException("Die Joyn-Startseite ist nicht verfügbar.")
+        val row = homeSections.getValue(section)
+        return row.lock.withLock {
+            val cursor = row.cursor?.takeUnless { page == 1 }
+                ?: CatalogueCursor(now()).also { row.cursor = it }
+            // Keep the time window and deduplication stable while Cloudstream expands the row.
+            while (cursor.pages.size < page && cursor.hasNext) {
+                val result = cataloguePage("", section.filter, cursor.sourcePage, cursor.availableAt)
+                val items = result.items.filter { cursor.seen.add(it.path) }
+                cursor.sourcePage++
+                cursor.hasNext = result.hasNext
+                // Continue past duplicate-only backend pages so the row can still be expanded.
+                if (items.isNotEmpty() || !result.hasNext) {
+                    cursor.pages += JoynCataloguePage(items, result.hasNext)
+                }
+            }
+            cursor.pages.getOrElse(page - 1) { JoynCataloguePage(emptyList(), false) }
         }
-        val lazy = root.items("lazyBlocks").mapNotNull { it.string("id") }
-        if (page == 1) return JoynHome(JoynParser.lanes(root.items("blocks")), lazy.isNotEmpty())
-        val start = (page - 2).toLong() * HOME_BATCH
-        if (start >= lazy.size) return JoynHome(emptyList(), false)
-        val ids = lazy.drop(start.toInt()).take(HOME_BATCH)
-        val blocks = query("Blocks", mapOf("ids" to ids)).items("blocks")
-        return JoynHome(JoynParser.lanes(blocks), start + ids.size < lazy.size)
     }
 
     private suspend fun algoliaKey(): String = searchLock.withLock {
@@ -85,14 +108,38 @@ internal class JoynClient(
 
     suspend fun search(term: String): List<JoynItem> {
         if (term.isBlank()) return emptyList()
+        val availableAt = now()
+        val items = linkedMapOf<String, JoynItem>()
+        var page = 0
+        do {
+            val result = cataloguePage(term.trim(), "(type:SERIES OR type:MOVIE)", page++, availableAt)
+            result.items.forEach { items.getOrPut(it.path) { it } }
+        } while (result.hasNext)
+        return items.values.toList()
+    }
+
+    private suspend fun cataloguePage(
+        term: String,
+        filter: String,
+        page: Int,
+        availableAt: Long,
+    ): JoynCataloguePage {
         // Refresh an expired server-side search key once; avoid silent empty results.
         repeat(2) { attempt ->
             val key = algoliaKey()
             val params = mapOf(
-                "query" to term.trim(), "hitsPerPage" to "50",
+                "query" to term,
+                "filters" to "distributionTenant:JOYN AND $filter",
+                "hitsPerPage" to CATALOGUE_BATCH.toString(),
+                "page" to page.toString(),
                 "numericFilters" to joynJson.writeValueAsString(listOf(
-                    "timeslot.start <= ${now()}", "timeslot.end >= ${now()}",
+                    "timeslot.start <= $availableAt", "timeslot.end >= $availableAt",
                 )),
+                "attributesToRetrieve" to "title,titles,path,routes,type,images,license,licenseTypes,markings,productionYear",
+                "attributesToHighlight" to "[]",
+                "attributesToSnippet" to "[]",
+                "enablePersonalization" to "false",
+                "enableReRanking" to "false",
             ).entries.joinToString("&") { (k, v) -> "$k=${URLEncoder.encode(v, "UTF-8")}" }
             val (status, root) = post(
                 "https://ffqrv35svv-dsn.algolia.net/1/indexes/*/queries",
@@ -106,8 +153,11 @@ internal class JoynClient(
                 if (status !in 200..299 || result == null || result.has("error")) {
                     throw JoynException("Joyn-Suche nicht verfügbar (HTTP $status).")
                 }
-                return result.items("hits").filter(JoynParser::isFree)
-                    .mapNotNull { JoynParser.item(it) }.distinctBy { it.path }
+                val totalPages = result.number("nbPages")
+                    ?: throw JoynException("Joyn hat keine Katalogseiten gemeldet.")
+                val items = result.items("hits").mapNotNull { JoynParser.item(it) }
+                    .filter { it.kind == "series" || it.kind == "movie" }
+                return JoynCataloguePage(items, page + 1 < totalPages)
             }
         }
         throw JoynException("Joyn-Suchschlüssel ist abgelaufen.")
@@ -123,16 +173,15 @@ internal class JoynClient(
         }
         val node = query(operation, mapOf("path" to path)).get("page")?.get(field)
             ?.takeUnless { it.isNull } ?: throw JoynException("Dieser Joyn-Inhalt ist nicht verfügbar.")
-        if (!JoynParser.isFree(node)) throw JoynException("Dieser Inhalt gehört zum kostenpflichtigen Joyn-Angebot.")
         val item = JoynParser.item(node) ?: throw JoynException("Unvollständige Joyn-Inhaltsdaten.")
         if (kind != "series") return JoynDetails(item)
         // The detail response embeds only a few preview episodes per season.
-        val seasons = node.items("freeSeasons").distinctBy { it.string("id") }
+        val seasons = listOf("allSeasons", "freeSeasons", "svodSeasons").flatMap { node.items(it) }
+            .distinctBy { it.string("id") }
         val episodes = seasons.flatMap { season ->
             val id = season.string("id") ?: return@flatMap emptyList()
             seasonEpisodes(id, season.number("number"))
         }.distinctBy { it.path }.sortedWith(compareBy({ it.season ?: 0 }, { it.episode ?: 0 }))
-        if (episodes.isEmpty()) throw JoynException("Für diese Serie sind aktuell keine kostenlosen Folgen verfügbar.")
         return JoynDetails(item, episodes)
     }
 
@@ -142,7 +191,7 @@ internal class JoynClient(
         var offset = 0
         while (true) {
             val season = query("Season", mapOf("id" to id, "first" to EPISODE_BATCH,
-                "offset" to offset, "licenseFilter" to "FREE")).get("season")
+                "offset" to offset, "licenseFilter" to "ALL")).get("season")
                 ?.takeUnless { it.isNull } ?: throw JoynException("Eine Joyn-Staffel konnte nicht geladen werden.")
             val batch = season.items("episodes")
             val fresh = batch.filter { node ->
@@ -153,9 +202,9 @@ internal class JoynClient(
             if (batch.isNotEmpty() && fresh.isEmpty()) {
                 throw JoynException("Joyn wiederholt dieselbe Folgenseite. Bitte später erneut versuchen.")
             }
-            result += fresh.filter(JoynParser::isFree).mapNotNull { JoynParser.item(it, number) }
+            result += fresh.mapNotNull { JoynParser.item(it, number) }
             offset += batch.size
-            // Do not use numberOfEpisodes: it may include unavailable/paid episodes.
+            // The reported total can include unavailable episodes.
             if (batch.size < EPISODE_BATCH) return result
             if (offset > 50_000) throw JoynException("Joyn meldet zu viele Folgen für eine einzelne Staffel.")
         }
@@ -208,12 +257,10 @@ internal class JoynClient(
 
     companion object {
         internal const val EPISODE_BATCH = 100
-        private const val HOME_BATCH = 6
+        private const val CATALOGUE_BATCH = 100
         // Public identifier shipped by Joyn's web frontend; not a user credential.
         private const val PUBLIC_WEB_API_KEY = "4f0fd9f18abbe3cf0e87fdb556bc39c8"
         private val queries = mapOf(
-            "LandingPageClient" to "d126aa8da9aae9a7abdabe014e8641ce54c17fd0a39c37f8a7bbcab258821508",
-            "Blocks" to "b136380c332b3c0ec5b8e074546bad5f12715dfb77076296ed72d4977e2a7f58",
             "AlgoliaApiKey" to "21a962eb1b3f05c32b85cf8d015f1814563af3d4aede35d6e2f211838fdcfb61",
             "SeriesDetailNewPageStatic" to "e867452d17ef36e5c077db5cdcad7563a9aebede497c24ac8fae779723bc462d",
             "EpisodeDetailPageStatic" to "c4bcacee94d38133e87879dad8d69bd8a74c7326262a1848cceb964b871c1551",

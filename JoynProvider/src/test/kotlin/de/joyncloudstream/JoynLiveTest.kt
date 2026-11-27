@@ -1,9 +1,13 @@
 package de.joyncloudstream
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -27,19 +31,56 @@ class JoynLiveTest {
     @Test fun `live catalogue search and all seasons`() = runBlocking {
         assumeTrue(System.getenv("JOYN_LIVE_TESTS") == "1")
         val api = client()
-        val home = api.home(1)
-        assertTrue("No free homepage cards", home.lanes.any { it.items.isNotEmpty() })
-        assertTrue("No next homepage page", home.hasNext)
-        assertTrue("Lazy homepage lanes empty", api.home(2).lanes.isNotEmpty())
+        val rows = JoynSection.entries.associateWith { api.home(it, 1) }
+        assertTrue("Empty homepage row", rows.values.all { it.items.isNotEmpty() })
+        val series = rows.getValue(JoynSection.SERIES)
+        assertTrue("No next homepage page", series.hasNext)
+        assertTrue("Series row has overlapping pages", api.home(JoynSection.SERIES, 2).items
+            .map { it.path }.intersect(series.items.map { it.path }.toSet()).isEmpty())
         val hits = api.search("K11")
         assertTrue("Search returned no series", hits.any { it.kind == "series" })
-        val series = home.lanes.flatMap { it.items }.first { it.kind == "series" }
-        val detail = api.details(series.path)
+        val detail = api.details("/serien/hochzeit-auf-den-ersten-blick-spezial")
         assertTrue("No episodes loaded", detail.episodes.isNotEmpty())
         assertTrue("Episode video IDs missing", detail.episodes.all { !it.videoId.isNullOrBlank() })
         val episode = api.details(detail.episodes.first().path)
         assertNotNull(episode.item.videoId)
-        println("Live catalogue OK: ${home.lanes.size} lanes, ${hits.size} search hits, ${detail.episodes.size} episodes.")
+        // The Android compile classpath omits ImageIO, which is available on the host test JVM.
+        val decodeImage = Class.forName("javax.imageio.ImageIO").getMethod("read", InputStream::class.java)
+        val artwork = rows.values.flatMap { it.items.take(3) } + hits.take(2) + detail.episodes.take(2)
+        artwork.forEach { item ->
+            val url = item.poster ?: error("Missing poster for ${item.path}")
+            val connection = URL(url).openConnection()
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 15_000
+            JoynParser.artworkHeaders.forEach { (key, value) -> connection.setRequestProperty(key, value) }
+            assertNotNull("Unusable poster for ${item.path}", connection.getInputStream().use {
+                decodeImage.invoke(null, it)
+            })
+        }
+        println("Live catalogue OK: ${rows.size} rows, ${hits.size} search hits, ${artwork.size} decoded images.")
+    }
+
+    @Test fun `live series and film rows reach the end of the current catalogue`() = runBlocking {
+        assumeTrue(System.getenv("JOYN_FULL_CATALOG_TESTS") == "1")
+        val api = client()
+        listOf(JoynSection.SERIES, JoynSection.MOVIES).map { section ->
+            async(Dispatchers.IO) {
+                val paths = mutableSetOf<String>()
+                var posters = 0
+                var page = 0
+                do {
+                    val result = api.home(section, ++page)
+                    result.items.forEach {
+                        assertTrue("Duplicate catalogue path ${it.path}", paths.add(it.path))
+                        if (it.poster != null) posters++
+                    }
+                } while (result.hasNext)
+                assertTrue("Catalogue unexpectedly small for $section", paths.size > 1_000)
+                assertTrue("Too few poster URLs in $section", posters >= paths.size * 0.99)
+                println("$section: ${paths.size} catalogue entries across $page pages, $posters with artwork URLs.")
+            }
+        }.awaitAll()
+        Unit
     }
 
     @Test fun `live playback diagnostic`() = runBlocking {

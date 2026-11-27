@@ -16,7 +16,7 @@ class JoynProvider : MainAPI() {
     override val hasMainPage = true
     override val hasDownloadSupport = false
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
-    override val mainPage = mainPageOf("/neu-beliebt" to "Joyn Mediathek")
+    override val mainPage = mainPageOf(*JoynSection.entries.map { it.name to it.title }.toTypedArray())
 
     private val client = JoynClient(JoynTransport { url, headers, body ->
         val response = app.post(url, headers = headers,
@@ -29,10 +29,8 @@ class JoynProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse = showErrors {
-        val home = client.home(page)
-        newHomePageResponse(home.lanes.map { lane ->
-            HomePageList(lane.title, lane.items.map { it.searchResponse() })
-        }, home.hasNext)
+        val home = client.home(JoynSection.valueOf(request.data), page)
+        newHomePageResponse(request, home.items.map { it.searchResponse() }, home.hasNext)
     }
 
     override suspend fun search(query: String): List<SearchResponse> = showErrors {
@@ -41,10 +39,16 @@ class JoynProvider : MainAPI() {
         } else client.search(query).map { it.searchResponse() }
     }
 
-    private fun JoynItem.searchResponse(): SearchResponse = if (kind == "series") {
-        newTvSeriesSearchResponse(title, "$mainUrl$path", TvType.TvSeries) { posterUrl = poster }
-    } else {
-        newMovieSearchResponse(title, "$mainUrl$path", TvType.Movie) { posterUrl = poster }
+    private fun JoynItem.searchResponse(): SearchResponse {
+        val result = if (kind == "series") {
+            newTvSeriesSearchResponse(title, "$mainUrl$path", TvType.TvSeries)
+        } else {
+            newMovieSearchResponse(title, "$mainUrl$path", TvType.Movie)
+        }
+        return result.apply {
+            posterUrl = poster
+            posterHeaders = JoynParser.artworkHeaders
+        }
     }
 
     override suspend fun load(url: String): LoadResponse = showErrors {
@@ -54,7 +58,7 @@ class JoynProvider : MainAPI() {
             val episodes = detail.episodes.map { ep ->
                 // Only stable IDs and a public URL are saved; session tokens are fetched on play.
                 newEpisode(playData(ep)) {
-                    name = ep.title
+                    name = ep.accessHint?.let { "${ep.title} · $it" } ?: ep.title
                     season = ep.season
                     episode = ep.episode
                     posterUrl = ep.poster
@@ -63,18 +67,20 @@ class JoynProvider : MainAPI() {
             }
             newTvSeriesLoadResponse(item.title, "$mainUrl${item.path}", TvType.TvSeries, episodes) {
                 posterUrl = item.poster
+                posterHeaders = JoynParser.artworkHeaders
                 backgroundPosterUrl = item.background
                 plot = item.description
                 year = item.year
-                tags = item.genres
+                tags = item.genres + listOfNotNull(item.accessHint)
             }
         } else {
             newMovieLoadResponse(item.title, "$mainUrl${item.path}", TvType.Movie, playData(item)) {
                 posterUrl = item.poster
+                posterHeaders = JoynParser.artworkHeaders
                 backgroundPosterUrl = item.background
                 plot = item.description
                 year = item.year
-                tags = item.genres
+                tags = item.genres + listOfNotNull(item.accessHint)
                 duration = item.durationSeconds?.div(60)
             }
         }

@@ -28,10 +28,10 @@ internal data class JoynItem(
     val episode: Int? = null,
     val durationSeconds: Int? = null,
     val background: String? = null,
+    val accessHint: String? = null,
 )
 
-internal data class JoynLane(val title: String, val items: List<JoynItem>)
-internal data class JoynHome(val lanes: List<JoynLane>, val hasNext: Boolean)
+internal data class JoynCataloguePage(val items: List<JoynItem>, val hasNext: Boolean)
 internal data class JoynDetails(val item: JoynItem, val episodes: List<JoynItem> = emptyList())
 internal data class JoynPlayback(val manifest: String, val format: String, val license: String?)
 
@@ -39,6 +39,16 @@ internal class JoynException(message: String) : Exception(message)
 
 internal object JoynParser {
     const val SITE = "https://www.joyn.de"
+    val artworkHeaders = mapOf("Accept" to "image/jpeg", "Referer" to "$SITE/")
+
+    private val portraitTypes = listOf(
+        "COVER_PORTRAIT", "HERO_PORTRAIT", "IMAGE_VERTICAL_CLEAN", "VOD_ART_PORTRAIT",
+        "BANNER_L_1_PORTRAIT", "POSTER",
+    )
+    private val landscapeTypes = listOf(
+        "HERO_LANDSCAPE", "PRIMARY", "IMAGE_HEADER_POSTER", "IMAGE_HORIZONTAL_COVER_CLEAN",
+        "COVER_LANDSCAPE", "TEASER_LANDSCAPE", "VOD_ART", "ICONIC", "BANNER_L_1", "LIVE_STILL",
+    )
 
     /** Accept public Joyn content links only, including links shared by the player. */
     fun contentPath(value: String): String {
@@ -66,15 +76,41 @@ internal object JoynParser {
         else -> "series"
     }
 
-    fun isFree(node: JsonNode): Boolean {
+    private fun accessHint(node: JsonNode): String? {
         val licenses = node.items("licenseTypes").map { it.asText() } + listOfNotNull(node.string("license"))
-        val plus = node.items("markings").any { it.asText() == "PLUS" || it.asText() == "PLUS_ONLY" }
-        return !plus && licenses.any { it == "AVOD" || it == "FVOD" }
+        val markings = node.get("markings")
+        return when {
+            node.items("markings").any { it.asText() in setOf("PLUS", "PLUS_ONLY") } ||
+                markings?.path("isPlusOnly")?.path("value")?.asBoolean() == true -> "Joyn+"
+            licenses.any { it == "AVOD" || it == "FVOD" } -> null
+            "RVOD" in licenses -> "Joyn-Login"
+            "SVOD" in licenses -> "Joyn+"
+            else -> null
+        }
     }
 
-    private fun image(node: JsonNode, vararg fields: String): String? = fields.firstNotNullOfOrNull { key ->
-        node.get(key)?.let { it.string("url") ?: it.string("urlCard") }
+    private fun imageUrl(value: String?, profile: String): String? {
+        if (value == null || !https(value)) return null
+        val uri = URI(value)
+        if (uri.host != "img.joyn.de" || uri.rawPath.isNullOrEmpty()) return value
+        // Joyn's CDN requires an image profile for bare index URLs.
+        val path = uri.rawPath.substringBefore("/profile:").trimEnd('/')
+        val query = uri.rawQuery?.let { "?$it" }.orEmpty()
+        return "https://${uri.rawAuthority}$path/profile:$profile$query"
     }
+
+    private fun image(node: JsonNode, profile: String, vararg fields: String): String? =
+        fields.firstNotNullOfOrNull { field ->
+            val art = node.get(field) ?: return@firstNotNullOfOrNull null
+            listOf(art.takeIf { it.isTextual }?.asText(), art.string("url"), art.string("urlCard"),
+                art.string("urlMobile")).firstNotNullOfOrNull { imageUrl(it, profile) }
+        }
+
+    private fun indexedImage(images: List<JsonNode>, types: List<String>, profile: String): String? =
+        types.firstNotNullOfOrNull { type ->
+            images.filter { it.string("type") == type }
+                .firstNotNullOfOrNull { imageUrl(it.string("url"), profile) }
+        }
 
     fun item(node: JsonNode, parentSeason: Int? = null): JoynItem? {
         val rawPath = node.string("path") ?: node.items("routes").let { routes ->
@@ -83,18 +119,26 @@ internal object JoynParser {
         } ?: return null
         val path = try { contentPath(rawPath) } catch (_: JoynException) { return null }
         val title = node.string("title") ?: node.get("titles")?.string("DE") ?: return null
+        val kind = kind(path)
         val searchImages = node.items("images")
-        val searchPoster = listOf("HERO_PORTRAIT", "COVER_PORTRAIT", "PRIMARY").firstNotNullOfOrNull { type ->
-            searchImages.firstOrNull { it.string("type") == type }?.string("url")
+        val landscape = image(node, "nextgen-web-herolandscape-1920x", "heroImageDesktop", "heroLandscapeImage")
+            ?: indexedImage(searchImages, landscapeTypes, "nextgen-web-herolandscape-1920x")
+        val thumbnail = image(node, "nextgen-web-livestill-503x283",
+            "cardImage", "primaryImage", "heroImageMobile", "heroImageDesktop", "heroLandscapeImage")
+            ?: indexedImage(searchImages, landscapeTypes, "nextgen-web-livestill-503x283")
+        val portrait = image(node, "original", "heroPortrait", "heroPortraitImage", "coverPortrait")
+            ?: indexedImage(searchImages, portraitTypes, "original")
+        val fallback = searchImages.firstNotNullOfOrNull { art ->
+            if (art.string("type").orEmpty().contains("LOGO")) null
+            else imageUrl(art.string("url"), "nextgen-web-livestill-503x283")
         }
         val season = node.get("season")
         val video = node.get("video")
         return JoynItem(
             title = title,
             path = path,
-            kind = kind(path),
-            poster = image(node, "heroPortrait", "heroPortraitImage", "primaryImage", "cardImage", "heroImageMobile")
-                ?: searchPoster ?: image(node, "heroLandscapeImage", "heroImageDesktop"),
+            kind = kind,
+            poster = if (kind == "episode") thumbnail ?: portrait ?: fallback else portrait ?: thumbnail ?: fallback,
             description = node.string("description"),
             year = node.number("productionYear"),
             genres = node.items("genres").mapNotNull { it.string("name") }.ifEmpty {
@@ -104,13 +148,9 @@ internal object JoynParser {
             season = parentSeason ?: season?.number("seasonNumber") ?: season?.number("number"),
             episode = node.number("number"),
             durationSeconds = video?.number("duration"),
-            background = image(node, "heroImageDesktop", "heroLandscapeImage"),
+            background = landscape,
+            accessHint = accessHint(node),
         )
-    }
-
-    fun lanes(blocks: List<JsonNode>): List<JoynLane> = blocks.mapNotNull { block ->
-        val items = block.items("assets").filter(::isFree).mapNotNull { item(it) }.distinctBy { it.path }
-        if (items.isEmpty()) null else JoynLane(block.string("headline") ?: "Joyn Highlights", items)
     }
 
     fun playback(node: JsonNode): JoynPlayback {

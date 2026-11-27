@@ -1,6 +1,6 @@
 {
   "name": "Joyn Mediathek – experimentell",
-  "description": "Kostenlose Joyn-Inhalte (DE). Wiedergabe-Signierung noch offen.",
+  "description": "Serien, Shows, Filme und Dokumentationen von Joyn (DE). Wiedergabe experimentell.",
   "manifestVersion": 1,
   "pluginLists": [
     "https://raw.githubusercontent.com/nerooo190/joyn-cloudstream/builds/plugins.json"

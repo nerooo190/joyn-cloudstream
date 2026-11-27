@@ -1,30 +1,24 @@
 # Prüfbericht
 
-Stand: 30. Oktober 2026.
+Stand: 27. November 2026.
 
 ## Bestätigte Ergebnisse
 
 - Der Kotlin-Provider wurde gegen die aktuelle Cloudstream-Vorabversion kompiliert.
 - Ein `.cs3`-Paket mit `manifest.json` und `classes.dex` wurde erzeugt. Der Manifest-Einstiegspunkt ist `de.joyncloudstream.JoynPlugin`.
-- 12 lokale Tests bestanden: 7 Clienttests und 5 Parsertests.
-- Der optionale Live-Katalogtest benutzte die produktiven Kotlin-Clientmethoden und bestätigte 2 Inhaltsreihen auf der ersten Seite, weitere Reihen auf der zweiten Seite, 3 Suchtreffer für `K11`, 22 vollständig geladene Folgen einer Serie sowie die Detaildaten einer einzelnen Folge.
-- Film-Detaildaten wurden zusätzlich direkt an der API geprüft.
-- Die Repository-Dateien wurden lokal erzeugt und gegen Dateigröße, Hash und Downloadadressen geprüft.
-- Der Veröffentlichungsablauf wurde mit einem lokalen Git-Remote simuliert: neuer `builds`-Branch beim ersten Lauf und normale Aktualisierung beim zweiten Lauf, ohne Force-Push.
+- Die Projekttests prüfen unter anderem das Nachladen von Katalogseiten und Staffeln, die Auflösung von Poster-URLs und die Zuordnung von Zugangshinweisen.
+- Der Browser-Katalog liefert separate Filter für Serien und Filme sowie zusätzliche Genre-Filter. Die Live-Tests verwenden dieselben Clientmethoden wie das Plugin und prüfen Bilddownloads sowie das Nachladen bis zur letzten Seite.
+- Der Workflow erzeugt die Repository-Dateien und prüft Dateigröße, Prüfsumme und Downloadadressen vor der Veröffentlichung.
 
 ## Nicht als funktionierende Wiedergabe bestätigt
 
-Die anonyme Anmeldung funktioniert. Die Live-Wiedergabediagnose erhielt von Joyn jedoch `ENT_AssetNotAvailableInCountry`. Dieser Fehler wird als Standortablehnung angezeigt. Es wurde dabei **kein erfolgreich abgespieltes Video**, kein erfolgreicher Lizenzabruf und kein funktionierender Ton-/Untertitelpfad bestätigt.
+Die anonyme Anmeldung funktioniert. Die bisherige Live-Wiedergabediagnose erhielt von Joyn `ENT_AssetNotAvailableInCountry`. Der Anbieter zeigt diesen Fehler als Standortablehnung an. Android-Wiedergabe, Lizenzabruf, Ton und Untertitel bleiben separat zu prüfen.
 
-Die aktuelle Webplayer-Anfragesignierung ist nicht implementiert. Die automatische Freigabeprüfung lehnte das Ausführen von verschleiertem Player-Code zur Untersuchung dieser Signierung wegen eines möglichen Eingriffs in Zugriffskontrollen ab. Dieser Schritt wurde nicht ausgeführt. Der vorhandene Client sendet eine reguläre token-authentifizierte Playlist-Anfrage ohne selbst rekonstruierte Signatur und meldet eine Ablehnung ausdrücklich.
-
-Die beiden optionalen Live-Tests sind getrennt zu lesen: Der Katalogtest prüft Ergebnisse mit Assertions; die Wiedergabediagnose protokolliert auch eine Ablehnung und zählt nicht als Nachweis funktionierenden Streamings.
+Die aktuelle Webplayer-Anfragesignierung für die Playlist ist offen. Die Wiedergabediagnose protokolliert die tatsächliche Antwort des Joyn-Dienstes.
 
 ## Bereitstellung
 
-GitHub verweigerte das Anlegen von `nerooo190/joyn-cloudstream` mit fehlender Berechtigung für `CreateRepository`. Deshalb wurde kein Remote-Repository erstellt oder veröffentlicht. Quellcode, lokales Git-Repository, Build-Artefakt und Workflow werden lokal bereitgestellt. Der Workflow wurde noch nicht auf GitHub ausgeführt.
-
-Nach dem Hochladen in ein eigenes Repository erzeugt der Workflow die richtigen Repository-Adressen automatisch. Eine direkte Installation über Raw-URLs setzt deren Erreichbarkeit aus Cloudstream voraus.
+Die [GitHub-Action](https://github.com/nerooo190/joyn-cloudstream/actions) veröffentlicht erfolgreiche Builds im Branch `builds`. Die für die Cloudstream-Installation benötigte [repo.json](https://raw.githubusercontent.com/nerooo190/joyn-cloudstream/builds/repo.json) befindet sich in diesem Branch.
 
 ## Build-Umgebung
 

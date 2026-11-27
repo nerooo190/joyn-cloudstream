@@ -1,7 +1,7 @@
-version = 1
+version = 2
 
 cloudstream {
-    description = "Joyn Mediathek: kostenlose Serien, Shows und Filme (DE). Experimentell."
+    description = "Joyn Mediathek: Serien, Shows, Filme und Dokumentationen (DE). Wiedergabe experimentell."
     authors = listOf("Joyn Cloudstream Contributors")
     language = "de"
     status = 3

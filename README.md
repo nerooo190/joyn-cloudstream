@@ -1,6 +1,6 @@
 # Joyn Mediathek für Cloudstream
 
-Experimentelles, eigenständiges Cloudstream-Repository für kostenlose Joyn-Inhalte in Deutschland. Kotlin-Provider, Gradle-Wrapper, Tests und GitHub-Actions-Veröffentlichung sind enthalten.
+Cloudstream-Repository für den deutschen Joyn-Mediathekskatalog. Der Anbieter zeigt Serien, Shows, Filme und Dokumentationen mit Vorschaubildern an.
 
 **Status: Katalog funktionsfähig, Streaming noch nicht vollständig.** Die aktuelle Webplayer-Signierung für Playlist-Anfragen ist nicht implementiert. Der reguläre Ablauf mit anonymer Sitzung, Wiedergabeberechtigung und Playlist-Anfrage ist enthalten. Eine abgelehnte Anfrage erzeugt eine Fehlermeldung. Das Projekt ist daher noch kein zuverlässig abspielbares Joyn-Plugin.
 
@@ -8,17 +8,27 @@ Experimentelles, eigenständiges Cloudstream-Repository für kostenlose Joyn-Inh
 
 | Funktion | Stand |
 | --- | --- |
-| Startseite mit weiteren Inhaltsreihen | Implementiert |
-| Suche über aktuellen Joyn-Suchindex | Implementiert |
-| Serien, Shows, komplette kostenlose Staffeln | Implementiert, Folgen werden seitenweise vollständig geladen |
-| Kostenlose Filme und einzelne Folgen | Implementiert |
+| Startseite | Reihen für alle Serien und Shows, alle Filme, Dokumentationen sowie Kinder und Familie |
+| Suche | Ergebnisse aus dem aktuellen Joyn-Suchindex, mit weiteren Seiten bei Bedarf |
+| Serien und Shows | Alle von Joyn gemeldeten Staffeln und Folgen werden seitenweise geladen |
+| Filme und Folgen | Detaildaten, Poster und Folgenbilder aus dem Joyn-Katalog |
 | Joyn-Link in das Suchfeld einfügen | Unterstützt `/serien/…`, `/filme/…` und entsprechende `/play/…`-Links |
 | Anonyme Sitzung und Wiedergabeberechtigung | Implementiert; Standort- und Zugangssperren werden angezeigt |
 | DASH/HLS und Widevine-Übergabe an Cloudstream | Implementiert, nicht auf Android end-to-end bestätigt |
 | Aktuelle Playlist-Signierung | **Offen; Streaming kann daran scheitern** |
 | Login, Joyn+, Alters-PIN, Live-TV, Casting, Downloads | Nicht implementiert |
 
-Es werden nur als AVOD/FVOD ausgewiesene Inhalte angeboten. Joyn kann trotzdem für einzelne Videos eine Anmeldung, Altersprüfung oder einen unterstützten Standort verlangen. Die Alters- und Standortangaben des Dienstes gelten weiterhin. Anonyme Tokens bleiben im Arbeitsspeicher; gespeicherte Episodendaten enthalten nur Video-ID und öffentlichen Inhaltslink. Widevine-Lizenzen werden an Androids CDM übergeben, sofern Joyn eine Lizenzadresse liefert.
+Der Katalog enthält auch Titel mit Joyn-Login oder Joyn+. Die Detailansicht zeigt den Zugangshinweis an, wenn Joyn ihn in den Metadaten meldet. Joyn prüft bei der Wiedergabe Anmeldung, Abo, Altersfreigabe und Standort. Anonyme Tokens bleiben im Arbeitsspeicher. Gespeicherte Episodendaten enthalten die Video-ID und den öffentlichen Inhaltslink. Sofern Joyn eine Lizenzadresse liefert, übernimmt Androids Widevine-CDM die Lizenzanfrage.
+
+## In Cloudstream installieren
+
+Unter **Einstellungen → Erweiterungen → Repository hinzufügen** diese URL eintragen:
+
+```text
+https://raw.githubusercontent.com/nerooo190/joyn-cloudstream/builds/repo.json
+```
+
+Danach **JoynProvider** installieren. Für eine vorhandene Installation unter **Erweiterungen** das Plugin aktualisieren. Ein erfolgreicher GitHub-Actions-Lauf veröffentlicht die neue Plugin-Version automatisch.
 
 ## Eigenes GitHub-Repository erstellen
 
@@ -34,7 +44,7 @@ Es werden nur als AVOD/FVOD ausgewiesene Inhalte angeboten. Joyn kann trotzdem f
 
 6. `JoynProvider` installieren und den Anbieter **Joyn (experimentell)** auswählen.
 
-`repo.json` im Quellbranch verweist auf das vorgesehene Repository `nerooo190/joyn-cloudstream`. Bei einem anderen Repository stattdessen die Datei im automatisch erzeugten `builds`-Branch verwenden: Sie enthält bereits die richtige GitHub-Adresse. Ein GitHub-Pages-Deployment ist nicht erforderlich. Bei privaten Repositories kann Cloudstream die Raw-Dateien ohne passende Anmeldung nicht abrufen; für normale Installation ein öffentliches Repository verwenden. Das Repository liegt zunächst lokal vor; die verwendete GitHub-Verbindung darf keine neuen Repositories anlegen.
+Für einen Fork die URL der `repo.json` aus dessen `builds`-Branch verwenden. Der Workflow schreibt beim Build die passende GitHub-Adresse in diese Datei. Für die Installation müssen die Dateien aus Cloudstream erreichbar sein.
 
 ## Lokal bauen
 
@@ -56,16 +66,17 @@ Windows: `gradlew.bat` statt `./gradlew`. Ergebnisse:
 
 ## Tests
 
-Die normalen Tests arbeiten ohne Netz. Sie prüfen unter anderem Pagination mit über 100 Folgen, wiederholte API-Seiten, aktuelle Suchtrefferformate, abgelaufene Sitzungen, Standortfehler und abgelehnte Playlists. Eine Wiedergabeberechtigung allein zählt nicht als funktionierender Stream.
+Die normalen Tests prüfen die Katalog- und Folgenpagination, doppelte Suchtreffer, Bildformate, abgelaufene Sitzungen, Standortfehler und abgelehnte Playlists.
 
 Optional lassen sich dieselben Kotlin-Clientmethoden gegen Joyn prüfen:
 
 ```bash
 JOYN_LIVE_TESTS=1 ./gradlew :JoynProvider:testDebugUnitTest --rerun-tasks --tests '*JoynLiveTest*'
+JOYN_FULL_CATALOG_TESTS=1 ./gradlew :JoynProvider:testDebugUnitTest --rerun-tasks --tests '*JoynLiveTest*'
 JOYN_PLAYBACK_TESTS=1 ./gradlew :JoynProvider:testDebugUnitTest --rerun-tasks --tests '*JoynLiveTest*'
 ```
 
-Der zweite Befehl ist eine **Diagnose**, kein Wiedergabe-Erfolgstest. Er protokolliert auch eine Ablehnung als solche. Optional lässt sich `JOYN_TEST_VIDEO_ID` mit einer aktuellen Joyn-Video-ID setzen. Echte Android-Wiedergabe, Lizenzvergabe, Ton und Untertitel müssen auf einem unterstützten Gerät separat getestet werden. Manifest-interne Ton- und Untertitelspuren werden dem Player überlassen.
+Die Tests prüfen der Reihe nach Stichproben mit Bilddownloads, die vollständige Pagination der Serien- und Filmreihen und die Antwort des Wiedergabedienstes. Für die Wiedergabediagnose lässt sich `JOYN_TEST_VIDEO_ID` mit einer aktuellen Joyn-Video-ID setzen. Die Wiedergabe auf einem Android-Gerät ist separat zu prüfen.
 
 ## Entwicklung
 
